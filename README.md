@@ -196,7 +196,7 @@ All 12 planned implementation stages are represented in source:
 11. Security/reliability hardening
 12. Tests, deployment files, cleanup, and packaging
 
-Current automated verification covers Android unit tests, x86 and ARM64 debug builds, signaling happy-path/reconnect tests, Abuse Shield tests, adaptive-quality/telemetry tests, and local signaling soak runs. The soak harness exercises sequential sessions, concurrent sessions, ICE-restart signaling, viewer/host reconnects, and repeated reconnect cycles without consuming production Cloudflare quota. `scripts/emulator-startup-soak.sh` repeatedly cold-starts the installed Android app and fails on launch errors, crashes, or ANRs.
+Current automated verification covers Android unit tests, x86 and ARM64 debug builds, release lint/build checks, signaling happy-path/reconnect tests, Abuse Shield tests, adaptive-quality/telemetry tests, and local signaling soak runs. Cloudflare Worker development/deployment uses Node.js 22+ because the security-fixed Wrangler 4.144.0 toolchain requires it. The soak harness exercises sequential sessions, concurrent sessions, ICE-restart signaling, viewer/host reconnects, and repeated reconnect cycles without consuming production Cloudflare quota. `scripts/emulator-startup-soak.sh` repeatedly cold-starts the installed Android app and fails on launch errors, crashes, or ANRs.
 
 Example local reliability checks:
 

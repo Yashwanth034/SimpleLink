@@ -21,4 +21,24 @@ class RescueProtocolTest {
     fun malformedMessageIsRejected() {
         assertNull(RescueProtocol.parse("not-a-simplelink-message", null))
     }
+
+    @Test
+    fun rescueValidationRejectsMalformedExternalInput() {
+        assertNull(RescueProtocol.validate("12345", "12345678", null))
+        assertNull(RescueProtocol.validate("123456", "short", null))
+        assertNull(RescueProtocol.validate("123456", "bad/request", null))
+        assertNull(RescueProtocol.validate("123456", "x".repeat(81), null))
+    }
+
+    @Test
+    fun rescueValidationNormalizesAndAcceptsBoundedRequestId() {
+        val request = RescueProtocol.validate(
+            "123 456",
+            "request-12345678",
+            "+10000000000"
+        )
+
+        assertEquals("123456", request?.code)
+        assertEquals("request-12345678", request?.requestId)
+    }
 }

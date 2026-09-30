@@ -3,12 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "check": "node --check src/index.js",
     "test:soak": "node test/soak-smoke.mjs",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "wrangler": "4.85.0"
+    "wrangler": "4.144.0"
   }
 }

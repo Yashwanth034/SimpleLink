@@ -33,10 +33,18 @@ object RescueProtocol {
             ?: return null
         val parts = protocol.split('|')
         if (parts.size != 4 || parts[0] != PREFIX || parts[1] != "R") return null
-        val code = SessionCode.normalize(parts[2])
-        if (!SessionCode.isValid(code)) return null
-        val requestId = parts[3]
+        return validate(parts[2], parts[3], senderAddress)
+    }
+
+    fun validate(
+        code: String,
+        requestId: String,
+        senderAddress: String?
+    ): RescueRequest? {
+        val normalized = SessionCode.normalize(code)
+        if (!SessionCode.isValid(normalized)) return null
         if (requestId.length !in 8..80) return null
-        return RescueRequest(code, requestId, senderAddress)
+        if (!requestId.all { it.isLetterOrDigit() || it in "._:-" }) return null
+        return RescueRequest(normalized, requestId, senderAddress)
     }
 }

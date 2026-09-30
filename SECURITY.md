@@ -36,3 +36,5 @@ SimpleLink does not attempt to bypass Android permission dialogs, secure-window 
 ## Secrets
 
 Do not commit `server/.env`, `local.properties`, keystores, production signing files, or TURN secrets. The included `.env.example` and `local.properties.example` contain placeholders only.
+
+For the Cloudflare Worker toolchain, use Node.js 22 or newer with the pinned Wrangler version in `cloudflare/package.json`. The fallback Node signaling server pins `ws` and includes a lockfile so dependency audits are reproducible.

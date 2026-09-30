@@ -26,7 +26,6 @@ import com.simplelink.app.control.RemoteControlCommand
 import com.simplelink.app.media.ProjectionForegroundService
 import com.simplelink.app.rescue.AppHashProvider
 import com.simplelink.app.rescue.RescueProtocol
-import com.simplelink.app.rescue.RescueRequest
 import com.simplelink.app.rescue.RescueSmsReceiver
 import com.simplelink.app.session.NearbyMode
 import com.simplelink.app.session.Role
@@ -286,9 +285,11 @@ class MainActivity : ComponentActivity() {
         val extrasCode = intent.getStringExtra(RescueSmsReceiver.EXTRA_CODE)
         val extrasRequestId = intent.getStringExtra(RescueSmsReceiver.EXTRA_REQUEST_ID)
         if (extrasCode != null && extrasRequestId != null) {
-            controller.incomingRescueRequest(
-                RescueRequest(extrasCode, extrasRequestId, intent.getStringExtra(RescueSmsReceiver.EXTRA_SENDER))
-            )
+            RescueProtocol.validate(
+                extrasCode,
+                extrasRequestId,
+                intent.getStringExtra(RescueSmsReceiver.EXTRA_SENDER)
+            )?.let(controller::incomingRescueRequest)
             return
         }
 
@@ -296,6 +297,7 @@ class MainActivity : ComponentActivity() {
         if (data.scheme != "simplelink" || data.host != "rescue") return
         val code = data.getQueryParameter("c") ?: return
         val requestId = data.getQueryParameter("r") ?: return
-        controller.incomingRescueRequest(RescueRequest(code, requestId, null))
+        RescueProtocol.validate(code, requestId, null)
+            ?.let(controller::incomingRescueRequest)
     }
 }

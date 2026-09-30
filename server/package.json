@@ -3,11 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test"
   },
   "dependencies": {
-    "ws": "8.18.3"
+    "ws": "8.22.0"
   }
 }

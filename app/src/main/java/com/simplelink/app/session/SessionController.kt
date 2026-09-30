@@ -105,6 +105,19 @@ class SessionController(private val context: Context) {
                 )
             }
         }
+        signaling.onBusy = { reason ->
+            val current = _state.value
+            if (current is SessionUiState.Joining) {
+                val status = when (reason) {
+                    "session_busy" -> "Phone is already in a support session"
+                    "rate_limited" -> "Too many attempts · Try again shortly"
+                    "daily_capacity", "admission_paused" ->
+                        "SimpleLink is temporarily at capacity · Try again later"
+                    else -> "Connection temporarily unavailable"
+                }
+                _state.value = current.copy(status = status, rescueAvailable = false)
+            }
+        }
         signaling.onPeerLeft = { endRemoteSession("Connection ended") }
         signaling.onSignal = webRtc::handleSignal
         signaling.onIceConfig = { internetIceServers = it }

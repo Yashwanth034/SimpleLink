@@ -3,10 +3,15 @@ main = "src/index.js"
 compatibility_date = "2026-05-01"
 workers_dev = true
 
+[vars]
+ADMIT_NEW_SESSIONS = "true"
+DAILY_NEW_SESSION_LIMIT = "8000"
+
 [durable_objects]
 bindings = [
   { name = "SIGNAL", class_name = "SignalHub" },
-  { name = "RATE_LIMIT", class_name = "JoinLimiter" }
+  { name = "RATE_LIMIT", class_name = "JoinLimiter" },
+  { name = "ADMISSION", class_name = "AdmissionGuard" }
 ]
 
 [[migrations]]
@@ -16,3 +21,7 @@ new_sqlite_classes = ["SignalHub"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["JoinLimiter"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["AdmissionGuard"]

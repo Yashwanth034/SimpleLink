@@ -30,3 +30,4 @@ cloudflare/.wrangler/
 .repotunnel-tmp-*/
 .oauth_url
 .tmp_*
+.tmp-wrangler-*/

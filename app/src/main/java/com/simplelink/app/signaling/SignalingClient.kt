@@ -45,6 +45,7 @@ class SignalingClient(private val scope: CoroutineScope) {
     var onSignal: ((String, JSONObject) -> Unit)? = null
     var onUnavailable: (() -> Unit)? = null
     var onNotFound: (() -> Unit)? = null
+    var onBusy: ((String) -> Unit)? = null
     var onIceConfig: ((List<IceServerSpec>) -> Unit)? = null
 
     fun registerHost(code: String, hostKey: String) {
@@ -187,7 +188,18 @@ class SignalingClient(private val scope: CoroutineScope) {
                     connecting = false
                     !intentionalClose
                 }
-                if (retry) handleTransportLoss()
+                if (!retry) return
+
+                if (response?.code == 429) {
+                    val retryAfterSeconds = response.header("Retry-After")
+                        ?.toLongOrNull()
+                        ?.coerceIn(1L, 600L)
+                        ?: 60L
+                    scope.launch { onBusy?.invoke("rate_limited") }
+                    scheduleReconnect(retryAfterSeconds * 1_000L)
+                } else {
+                    handleTransportLoss()
+                }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -209,7 +221,7 @@ class SignalingClient(private val scope: CoroutineScope) {
     }
 
     @Synchronized
-    private fun scheduleReconnect() {
+    private fun scheduleReconnect(minDelayMs: Long = 0L) {
         if (intentionalClose || reconnectScheduled) return
 
         val persistent = joinRegistration ?: hostRegistration
@@ -219,7 +231,8 @@ class SignalingClient(private val scope: CoroutineScope) {
         if (pendingMessages.isEmpty()) return
 
         reconnectScheduled = true
-        val delayMs = (1_000L shl reconnectAttempt.coerceAtMost(4)).coerceAtMost(15_000L)
+        val backoffMs = (1_000L shl reconnectAttempt.coerceAtMost(4)).coerceAtMost(15_000L)
+        val delayMs = maxOf(backoffMs, minDelayMs.coerceAtMost(600_000L))
         reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(5)
         reconnectJob = scope.launch {
             delay(delayMs)
@@ -265,8 +278,15 @@ class SignalingClient(private val scope: CoroutineScope) {
                 onIceConfig?.invoke(servers)
             }
             "busy" -> {
-                if (message.optString("reason") == "code_in_use") onCodeConflict?.invoke()
-                else onUnavailable?.invoke()
+                val reason = message.optString("reason")
+                if (reason == "code_in_use") {
+                    onCodeConflict?.invoke()
+                } else {
+                    synchronized(this) {
+                        joinRegistration = null
+                    }
+                    onBusy?.invoke(reason)
+                }
             }
             "not_found", "expired" -> onNotFound?.invoke()
             "error" -> onUnavailable?.invoke()

@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">SimpleLink</string>
+    <string name="accessibility_service_description">Allows approved SimpleLink sessions to control this phone.</string>
+</resources>

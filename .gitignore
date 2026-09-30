@@ -1,0 +1,32 @@
+.gradle/
+.idea/
+.kotlin/
+local.properties
+**/build/
+*.iml
+.DS_Store
+
+# Dependencies and local service state
+**/node_modules/
+server/.env
+cloudflare/.wrangler/
+.wrangler/
+
+# Signing material
+*.jks
+*.keystore
+
+# Generated APKs and local verification artifacts
+.artifacts/
+*.apk
+.x86-build.log
+.emu-*.png
+.real-*.png
+
+# RepoTunnel/local one-off helpers
+.build_handshake_fix.sh
+.real_scan.py
+.scan_*.py
+.repotunnel-tmp-*/
+.oauth_url
+.tmp_*

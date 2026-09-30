@@ -1,0 +1,45 @@
+services:
+  signal:
+    build: .
+    restart: unless-stopped
+    environment:
+      PORT: "8787"
+      TURN_SECRET: ${TURN_SECRET}
+      TURN_URLS: ${TURN_URLS}
+      TURN_TTL_SECONDS: ${TURN_TTL_SECONDS:-3600}
+
+  caddy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SIGNAL_DOMAIN: ${SIGNAL_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - signal
+
+  turn:
+    image: coturn/coturn:4.18.0-r0
+    restart: unless-stopped
+    command:
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --realm=${TURN_REALM}
+      - --external-ip=${TURN_EXTERNAL_IP}
+      - --min-port=49160
+      - --max-port=49200
+      - --no-multicast-peers
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"
+
+volumes:
+  caddy_data:
+  caddy_config:

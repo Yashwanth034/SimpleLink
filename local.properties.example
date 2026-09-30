@@ -1,0 +1,8 @@
+# Copy this file to local.properties.
+sdk.dir=/home/you/Android/Sdk
+
+# Stable production signaling endpoint.
+simplelink.signalingUrl=wss://simplelink-signal.funnyemail023.workers.dev/ws
+
+# Optional local override for signaling tests. Debug builds permit ws://.
+# simplelink.signalingUrl=ws://192.168.1.50:8787/ws

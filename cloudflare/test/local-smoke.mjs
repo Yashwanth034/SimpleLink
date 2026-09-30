@@ -61,9 +61,19 @@ expect(await next(viewer), 'approved');
 viewer.send(JSON.stringify({
   type: 'signal',
   requestId,
-  payload: { kind: 'offer', sdp: 'initial' }
+  payload: { kind: 'restart_request' }
 }));
 let relayed = expect(await next(host), 'signal');
+if (relayed.payload.kind !== 'restart_request') {
+  throw new Error('restart request relay failed');
+}
+
+viewer.send(JSON.stringify({
+  type: 'signal',
+  requestId,
+  payload: { kind: 'offer', sdp: 'initial' }
+}));
+relayed = expect(await next(host), 'signal');
 if (relayed.payload.sdp !== 'initial') throw new Error('initial relay failed');
 
 viewer.terminate();
@@ -116,5 +126,5 @@ if (relayed.payload.sdp !== 'after-host-reconnect') {
 host2.close();
 viewer2.close();
 
-console.log('PASS code-sharding + approval + viewer reconnect + host reconnect + bidirectional signaling');
+console.log('PASS code-sharding + approval + ICE-restart request + viewer reconnect + host reconnect + bidirectional signaling');
 setTimeout(() => process.exit(0), 100);

@@ -53,6 +53,9 @@ function validSignalPayload(payload) {
           payload.sdpMLineIndex <= 128))
     );
   }
+  if (kind === "restart_request") {
+    return Object.keys(payload).every(key => key === "kind");
+  }
   return false;
 }
 

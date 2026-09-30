@@ -11,6 +11,7 @@ import com.simplelink.app.rescue.RescueRequest
 import com.simplelink.app.rescue.RescueSmsRetriever
 import com.simplelink.app.signaling.SignalingClient
 import com.simplelink.app.util.ConnectivityMonitor
+import com.simplelink.app.util.NetworkPath
 import com.simplelink.app.webrtc.IceServerSpec
 import com.simplelink.app.webrtc.ScreenSize
 import com.simplelink.app.webrtc.WebRtcEngine
@@ -55,6 +56,7 @@ class SessionController(private val context: Context) {
     private var reconnectJob: Job? = null
     private var hostLeaseJob: Job? = null
     private var hostSessionKey: String? = null
+    private var activeRemoteRequestId: String? = null
     private var nearbyFallbackKey: String? = null
     private var internetIceServers: List<IceServerSpec> = emptyList()
 
@@ -182,6 +184,7 @@ class SessionController(private val context: Context) {
             }
         }
         webRtc.onDisconnected = { endRemoteSession("Connection ended") }
+        connectivity.startWatching(::onNetworkPathChanged)
     }
 
     fun startSharing() {
@@ -377,6 +380,7 @@ class SessionController(private val context: Context) {
             webRtc.startHost(requestId, data, iceServersFor(requestId), ::sendSignal)
         }.isSuccess
         if (started) {
+            activeRemoteRequestId = requestId
             _state.value = SessionUiState.Remote(Role.HOST, "Starting secure session…")
         } else {
             rejectTransportRequest(requestId)
@@ -414,6 +418,7 @@ class SessionController(private val context: Context) {
     }
 
     private fun startViewerWebRtc(requestId: String) {
+        activeRemoteRequestId = requestId
         webRtc.prepareViewer(requestId, iceServersFor(requestId), ::sendSignal)
         _state.value = SessionUiState.Remote(Role.VIEWER, "Starting secure session…")
     }
@@ -497,6 +502,24 @@ class SessionController(private val context: Context) {
     private fun sendSignal(requestId: String, payload: JSONObject) {
         if (requestId.startsWith(NEARBY_PREFIX)) nearby.sendSignal(requestId, payload)
         else signaling.sendSignal(requestId, payload)
+    }
+
+    private fun onNetworkPathChanged(previous: NetworkPath?, current: NetworkPath?) {
+        current ?: return
+        val state = _state.value as? SessionUiState.Remote ?: return
+        val requestId = activeRemoteRequestId ?: return
+        if (requestId.startsWith(NEARBY_PREFIX)) return
+
+        _state.value = state.copy(
+            status = if (previous == null) {
+                "Internet restored · Reconnecting…"
+            } else {
+                "Network changed · Reconnecting…"
+            }
+        )
+
+        signaling.reconnectForNetworkChange()
+        webRtc.handleNetworkPathChanged()
     }
 
     private fun requestNearbyFallback(mode: NearbyMode, code: String) {
@@ -611,6 +634,7 @@ class SessionController(private val context: Context) {
         reconnectJob = null
         hostLeaseJob = null
         hostSessionKey = null
+        activeRemoteRequestId = null
         nearbyFallbackKey = null
         approvedRescueRequestId = null
         deniedRescueRequestId = null

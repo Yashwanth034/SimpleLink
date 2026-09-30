@@ -49,6 +49,10 @@ class WebRtcEngine(private val context: Context) {
     private var localVideoTrack: VideoTrack? = null
     private var localVideoSender: RtpSender? = null
     private var activeRequestId: String? = null
+    private var isHostPeer = false
+    private var iceRestartInProgress = false
+    private var networkRecoveryInProgress = false
+    private var lastNetworkRecoveryAtMs = 0L
     private var sendSignal: ((String, JSONObject) -> Unit)? = null
     private var activeIceServers: List<IceServerSpec> = emptyList()
     private val pendingRemoteCandidates = mutableListOf<IceCandidate>()
@@ -67,6 +71,12 @@ class WebRtcEngine(private val context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val disconnectTimeout = Runnable {
         if (!isClosing) onDisconnected?.invoke()
+    }
+    private val iceRestartTimeout = Runnable {
+        iceRestartInProgress = false
+    }
+    private val networkRecoveryReset = Runnable {
+        networkRecoveryInProgress = false
     }
     private val qualityMonitorRunnable = object : Runnable {
         override fun run() {
@@ -110,6 +120,10 @@ class WebRtcEngine(private val context: Context) {
     ) {
         closePeerOnly()
         activeRequestId = requestId
+        isHostPeer = true
+        iceRestartInProgress = false
+        networkRecoveryInProgress = false
+        lastNetworkRecoveryAtMs = 0L
         sendSignal = signalSender
         activeIceServers = iceServers
         currentStreamQuality = StreamQuality.HIGH
@@ -131,6 +145,10 @@ class WebRtcEngine(private val context: Context) {
     ) {
         closePeerOnly()
         activeRequestId = requestId
+        isHostPeer = false
+        iceRestartInProgress = false
+        networkRecoveryInProgress = false
+        lastNetworkRecoveryAtMs = 0L
         sendSignal = signalSender
         activeIceServers = iceServers
         remoteDescriptionSet = false
@@ -151,7 +169,12 @@ class WebRtcEngine(private val context: Context) {
             }
             "answer" -> {
                 val sdp = payload.optString("sdp")
-                setRemoteDescription(SessionDescription(SessionDescription.Type.ANSWER, sdp), null)
+                setRemoteDescription(SessionDescription(SessionDescription.Type.ANSWER, sdp)) {
+                    completeIceRestart()
+                }
+            }
+            "restart_request" -> {
+                if (isHostPeer) restartIceAsHost()
             }
             "candidate" -> {
                 val candidate = IceCandidate(
@@ -165,6 +188,25 @@ class WebRtcEngine(private val context: Context) {
                     pendingRemoteCandidates += candidate
                 }
             }
+        }
+    }
+
+    fun handleNetworkPathChanged() {
+        val requestId = activeRequestId ?: return
+        if (requestId.startsWith("nearby:")) return
+
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastNetworkRecoveryAtMs < NETWORK_RECOVERY_COOLDOWN_MS) return
+        lastNetworkRecoveryAtMs = now
+        beginNetworkRecovery()
+
+        if (isHostPeer) {
+            restartIceAsHost()
+        } else {
+            sendSignal?.invoke(
+                requestId,
+                JSONObject().put("kind", "restart_request")
+            )
         }
     }
 
@@ -193,6 +235,12 @@ class WebRtcEngine(private val context: Context) {
         _remoteVideoTrack.value = null
         _remoteInputState.value = RemoteInputState()
         activeRequestId = null
+        isHostPeer = false
+        iceRestartInProgress = false
+        networkRecoveryInProgress = false
+        lastNetworkRecoveryAtMs = 0L
+        mainHandler.removeCallbacks(iceRestartTimeout)
+        mainHandler.removeCallbacks(networkRecoveryReset)
         sendSignal = null
         activeIceServers = emptyList()
         currentStreamQuality = StreamQuality.HIGH
@@ -351,6 +399,45 @@ class WebRtcEngine(private val context: Context) {
         return metrics
     }
 
+    private fun restartIceAsHost() {
+        val peer = peerConnection ?: return
+        if (!isHostPeer || iceRestartInProgress) return
+        beginNetworkRecovery()
+        if (peer.signalingState() != PeerConnection.SignalingState.STABLE) {
+            mainHandler.postDelayed({ restartIceAsHost() }, 750L)
+            return
+        }
+
+        iceRestartInProgress = true
+        mainHandler.removeCallbacks(iceRestartTimeout)
+        mainHandler.postDelayed(iceRestartTimeout, ICE_RESTART_TIMEOUT_MS)
+        pendingRemoteCandidates.clear()
+
+        runCatching {
+            peer.restartIce()
+            createOffer()
+        }.onFailure {
+            completeIceRestart()
+        }
+    }
+
+    private fun completeIceRestart() {
+        iceRestartInProgress = false
+        mainHandler.removeCallbacks(iceRestartTimeout)
+    }
+
+    private fun beginNetworkRecovery() {
+        networkRecoveryInProgress = true
+        mainHandler.removeCallbacks(networkRecoveryReset)
+        mainHandler.postDelayed(networkRecoveryReset, NETWORK_RECOVERY_GRACE_MS)
+    }
+
+    private fun completeNetworkRecovery() {
+        networkRecoveryInProgress = false
+        mainHandler.removeCallbacks(networkRecoveryReset)
+        mainHandler.removeCallbacks(disconnectTimeout)
+    }
+
     private fun createOffer() {
         val constraints = MediaConstraints()
         peerConnection?.createOffer(object : SimpleSdpObserver() {
@@ -464,6 +551,7 @@ class WebRtcEngine(private val context: Context) {
 
     private fun closePeerOnly() {
         stopQualityMonitor()
+        completeIceRestart()
         isClosing = true
         dataChannel?.close()
         dataChannel?.dispose()
@@ -503,7 +591,14 @@ class WebRtcEngine(private val context: Context) {
 
     private val observer = object : PeerConnection.Observer {
         override fun onSignalingChange(newState: PeerConnection.SignalingState) = Unit
-        override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState) = Unit
+        override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState) {
+            if (isClosing) return
+            when (newState) {
+                PeerConnection.IceConnectionState.CONNECTED,
+                PeerConnection.IceConnectionState.COMPLETED -> completeNetworkRecovery()
+                else -> Unit
+            }
+        }
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
         override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState) = Unit
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
@@ -541,7 +636,7 @@ class WebRtcEngine(private val context: Context) {
             if (isClosing) return
             when (newState) {
                 PeerConnection.PeerConnectionState.CONNECTED -> {
-                    mainHandler.removeCallbacks(disconnectTimeout)
+                    completeNetworkRecovery()
                     applySenderProfile(currentStreamQuality)
                     startQualityMonitor()
                     onConnected?.invoke()
@@ -549,10 +644,17 @@ class WebRtcEngine(private val context: Context) {
                 PeerConnection.PeerConnectionState.DISCONNECTED -> {
                     stopQualityMonitor()
                     mainHandler.removeCallbacks(disconnectTimeout)
-                    mainHandler.postDelayed(disconnectTimeout, 10_000)
+                    val timeoutMs = if (networkRecoveryInProgress) {
+                        NETWORK_RECOVERY_GRACE_MS
+                    } else {
+                        NORMAL_DISCONNECT_GRACE_MS
+                    }
+                    mainHandler.postDelayed(disconnectTimeout, timeoutMs)
                 }
                 PeerConnection.PeerConnectionState.FAILED,
                 PeerConnection.PeerConnectionState.CLOSED -> {
+                    networkRecoveryInProgress = false
+                    mainHandler.removeCallbacks(networkRecoveryReset)
                     stopQualityMonitor()
                     mainHandler.removeCallbacks(disconnectTimeout)
                     onDisconnected?.invoke()
@@ -564,6 +666,10 @@ class WebRtcEngine(private val context: Context) {
 
     companion object {
         private const val QUALITY_SAMPLE_INTERVAL_MS = 3_000L
+        private const val NETWORK_RECOVERY_COOLDOWN_MS = 3_000L
+        private const val NORMAL_DISCONNECT_GRACE_MS = 10_000L
+        private const val NETWORK_RECOVERY_GRACE_MS = 30_000L
+        private const val ICE_RESTART_TIMEOUT_MS = 12_000L
     }
 }
 

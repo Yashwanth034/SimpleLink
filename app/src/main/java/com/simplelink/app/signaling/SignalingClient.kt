@@ -100,6 +100,31 @@ class SignalingClient(private val scope: CoroutineScope) {
     }
 
     @Synchronized
+    fun reconnectForNetworkChange() {
+        if (intentionalClose) return
+        val persistent = joinRegistration ?: hostRegistration ?: return
+        if (sessionCode.isNullOrBlank()) return
+
+        if (!pendingMessages.contains(persistent)) {
+            pendingMessages.addFirst(persistent)
+        }
+
+        reconnectJob?.cancel()
+        reconnectJob = null
+        reconnectScheduled = false
+        reconnectAttempt = 0
+
+        val previous = socket
+        socket = null
+        open = false
+        connecting = false
+        intentionalClose = false
+        previous?.cancel()
+
+        connectLocked()
+    }
+
+    @Synchronized
     fun close() {
         reconnectJob?.cancel()
         reconnectJob = null

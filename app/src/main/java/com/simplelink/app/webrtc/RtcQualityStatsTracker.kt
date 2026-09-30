@@ -2,6 +2,11 @@ package com.simplelink.app.webrtc
 
 import org.webrtc.RTCStatsReport
 
+data class RtcQualitySnapshot(
+    val quality: NetworkQualitySample,
+    val route: ConnectionRoute
+)
+
 class RtcQualityStatsTracker {
     private var previousPacketsSent: Long? = null
     private var previousPacketsLost: Long? = null
@@ -11,12 +16,18 @@ class RtcQualityStatsTracker {
         previousPacketsLost = null
     }
 
-    fun sample(report: RTCStatsReport): NetworkQualitySample {
+    fun sample(report: RTCStatsReport): NetworkQualitySample =
+        sampleWithRoute(report).quality
+
+    fun sampleWithRoute(report: RTCStatsReport): RtcQualitySnapshot {
         var availableOutgoingBitrate: Long? = null
         var roundTripTimeMs: Double? = null
         var packetsSent: Long? = null
         var packetsLost: Long? = null
         var bandwidthLimited = false
+        var selectedLocalCandidateId: String? = null
+        var selectedRemoteCandidateId: String? = null
+        var selectedPairPriority = 0
 
         report.statsMap.values.forEach { stat ->
             val members = stat.members
@@ -32,6 +43,16 @@ class RtcQualityStatsTracker {
                         (members["currentRoundTripTime"] as? Number)?.toDouble()?.let { seconds ->
                             val ms = seconds * 1_000.0
                             roundTripTimeMs = minOf(roundTripTimeMs ?: ms, ms)
+                        }
+                        val priority = if (selected) 2 else 1
+                        if (priority >= selectedPairPriority) {
+                            selectedPairPriority = priority
+                            selectedLocalCandidateId =
+                                members["localCandidateId"]?.toString()
+                                    ?: selectedLocalCandidateId
+                            selectedRemoteCandidateId =
+                                members["remoteCandidateId"]?.toString()
+                                    ?: selectedRemoteCandidateId
                         }
                     }
                 }
@@ -89,11 +110,46 @@ class RtcQualityStatsTracker {
         if (sentNow != null) previousPacketsSent = sentNow
         if (lostNow != null) previousPacketsLost = lostNow
 
-        return NetworkQualitySample(
-            availableOutgoingBitrateBps = availableOutgoingBitrate,
-            roundTripTimeMs = roundTripTimeMs,
-            packetLossFraction = lossFraction,
-            bandwidthLimited = bandwidthLimited
+        val route = routeFor(
+            report,
+            selectedLocalCandidateId,
+            selectedRemoteCandidateId
         )
+
+        return RtcQualitySnapshot(
+            quality = NetworkQualitySample(
+                availableOutgoingBitrateBps = availableOutgoingBitrate,
+                roundTripTimeMs = roundTripTimeMs,
+                packetLossFraction = lossFraction,
+                bandwidthLimited = bandwidthLimited
+            ),
+            route = route
+        )
+    }
+
+    private fun routeFor(
+        report: RTCStatsReport,
+        localCandidateId: String?,
+        remoteCandidateId: String?
+    ): ConnectionRoute {
+        if (localCandidateId.isNullOrBlank() && remoteCandidateId.isNullOrBlank()) {
+            return ConnectionRoute.UNKNOWN
+        }
+
+        val candidateTypes = buildList {
+            localCandidateId?.let { id ->
+                report.statsMap[id]?.members?.get("candidateType")?.toString()?.let(::add)
+            }
+            remoteCandidateId?.let { id ->
+                report.statsMap[id]?.members?.get("candidateType")?.toString()?.let(::add)
+            }
+        }
+
+        if (candidateTypes.isEmpty()) return ConnectionRoute.UNKNOWN
+        return if (candidateTypes.any { it.equals("relay", ignoreCase = true) }) {
+            ConnectionRoute.RELAY
+        } else {
+            ConnectionRoute.DIRECT
+        }
     }
 }

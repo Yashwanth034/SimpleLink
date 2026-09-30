@@ -68,6 +68,8 @@ class WebRtcEngine(private val context: Context) {
     private var qualityMonitorRunning = false
     private var qualityStatsInFlight = false
     private val qualityStatsTracker = RtcQualityStatsTracker()
+    private val controlLatencyTracker = ControlLatencyTracker()
+    private var telemetryPingRunning = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val disconnectTimeout = Runnable {
         if (!isClosing) onDisconnected?.invoke()
@@ -87,6 +89,19 @@ class WebRtcEngine(private val context: Context) {
             }
         }
     }
+    private val telemetryPingRunnable = object : Runnable {
+        override fun run() {
+            if (!telemetryPingRunning) return
+            sendTelemetryPing()
+            if (telemetryPingRunning) {
+                mainHandler.postDelayed(this, TELEMETRY_PING_INTERVAL_MS)
+            }
+        }
+    }
+
+    private val _connectionTelemetry = MutableStateFlow(ConnectionTelemetry())
+    val connectionTelemetry: StateFlow<ConnectionTelemetry> =
+        _connectionTelemetry.asStateFlow()
 
     private val _remoteVideoTrack = MutableStateFlow<VideoTrack?>(null)
     val remoteVideoTrack: StateFlow<VideoTrack?> = _remoteVideoTrack.asStateFlow()
@@ -129,6 +144,8 @@ class WebRtcEngine(private val context: Context) {
         currentStreamQuality = StreamQuality.HIGH
         adaptiveQuality.reset(SystemClock.elapsedRealtime())
         qualityStatsTracker.reset()
+        controlLatencyTracker.reset()
+        _connectionTelemetry.value = ConnectionTelemetry(quality = StreamQuality.HIGH)
         remoteDescriptionSet = false
         pendingRemoteCandidates.clear()
         peerConnection = createPeerConnection()
@@ -151,6 +168,8 @@ class WebRtcEngine(private val context: Context) {
         lastNetworkRecoveryAtMs = 0L
         sendSignal = signalSender
         activeIceServers = iceServers
+        controlLatencyTracker.reset()
+        _connectionTelemetry.value = ConnectionTelemetry()
         remoteDescriptionSet = false
         pendingRemoteCandidates.clear()
         peerConnection = createPeerConnection()
@@ -220,6 +239,7 @@ class WebRtcEngine(private val context: Context) {
 
     fun close() {
         stopQualityMonitor()
+        stopTelemetryPing()
         runCatching { screenCapturer?.stopCapture() }
         screenCapturer?.dispose()
         screenCapturer = null
@@ -245,6 +265,8 @@ class WebRtcEngine(private val context: Context) {
         activeIceServers = emptyList()
         currentStreamQuality = StreamQuality.HIGH
         adaptiveQuality.reset()
+        controlLatencyTracker.reset()
+        _connectionTelemetry.value = ConnectionTelemetry()
         lastCaptureWidth = 0
         lastCaptureHeight = 0
         lastCaptureFps = 0
@@ -345,6 +367,8 @@ class WebRtcEngine(private val context: Context) {
         }
 
         applySenderProfile(profile)
+        _connectionTelemetry.value = _connectionTelemetry.value.copy(quality = profile)
+        sendTelemetryQuality(profile)
     }
 
     private fun applySenderProfile(profile: StreamQuality) {
@@ -360,7 +384,7 @@ class WebRtcEngine(private val context: Context) {
     }
 
     private fun startQualityMonitor() {
-        if (localVideoSender == null || qualityMonitorRunning) return
+        if (qualityMonitorRunning) return
         qualityMonitorRunning = true
         qualityStatsInFlight = false
         qualityStatsTracker.reset()
@@ -377,15 +401,35 @@ class WebRtcEngine(private val context: Context) {
 
     private fun collectAdaptiveQualitySample() {
         val peer = peerConnection ?: return
-        if (localVideoSender == null || qualityStatsInFlight) return
+        if (qualityStatsInFlight) return
         qualityStatsInFlight = true
 
         peer.getStats { report ->
-            val sample = qualityStatsTracker.sample(report)
+            val snapshot = qualityStatsTracker.sampleWithRoute(report)
             mainHandler.post {
                 qualityStatsInFlight = false
                 if (!qualityMonitorRunning || peerConnection !== peer) return@post
-                val next = adaptiveQuality.observe(sample, SystemClock.elapsedRealtime()) ?: return@post
+
+                val quality = snapshot.quality
+                val current = _connectionTelemetry.value
+                _connectionTelemetry.value = current.copy(
+                    networkRttMs = quality.roundTripTimeMs ?: current.networkRttMs,
+                    packetLossFraction = quality.packetLossFraction ?: current.packetLossFraction,
+                    availableOutgoingBitrateBps =
+                        quality.availableOutgoingBitrateBps ?: current.availableOutgoingBitrateBps,
+                    route = if (snapshot.route == ConnectionRoute.UNKNOWN) {
+                        current.route
+                    } else {
+                        snapshot.route
+                    },
+                    quality = if (isHostPeer) currentStreamQuality else current.quality
+                )
+
+                if (localVideoSender == null) return@post
+                val next = adaptiveQuality.observe(
+                    quality,
+                    SystemClock.elapsedRealtime()
+                ) ?: return@post
                 applyStreamQuality(next)
             }
         }
@@ -427,6 +471,9 @@ class WebRtcEngine(private val context: Context) {
     }
 
     private fun beginNetworkRecovery() {
+        if (!networkRecoveryInProgress) {
+            resetTransientTelemetry()
+        }
         networkRecoveryInProgress = true
         mainHandler.removeCallbacks(networkRecoveryReset)
         mainHandler.postDelayed(networkRecoveryReset, NETWORK_RECOVERY_GRACE_MS)
@@ -486,9 +533,20 @@ class WebRtcEngine(private val context: Context) {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
 
             override fun onStateChange() {
-                if (channel.state() == DataChannel.State.OPEN) {
-                    val metrics = currentDisplayMetrics()
-                    sendScreenInfo(metrics.widthPixels, metrics.heightPixels)
+                val state = channel.state()
+                mainHandler.post {
+                    if (dataChannel !== channel) return@post
+                    if (state == DataChannel.State.OPEN) {
+                        if (isHostPeer) {
+                            val metrics = currentDisplayMetrics()
+                            sendScreenInfo(metrics.widthPixels, metrics.heightPixels)
+                            sendTelemetryQuality(currentStreamQuality)
+                        } else {
+                            startTelemetryPing()
+                        }
+                    } else {
+                        stopTelemetryPing()
+                    }
                 }
             }
 
@@ -517,6 +575,10 @@ class WebRtcEngine(private val context: Context) {
                             text = payload.optString("text").take(4_000)
                         )
                     }
+                    "telemetry" -> {
+                        val payload = message.optJSONObject("payload") ?: return
+                        mainHandler.post { handleTelemetryMessage(payload) }
+                    }
                 }
             }
         })
@@ -543,6 +605,101 @@ class WebRtcEngine(private val context: Context) {
         sendData(message)
     }
 
+    private fun startTelemetryPing() {
+        if (isHostPeer || telemetryPingRunning) return
+        telemetryPingRunning = true
+        controlLatencyTracker.reset()
+        mainHandler.removeCallbacks(telemetryPingRunnable)
+        mainHandler.post(telemetryPingRunnable)
+    }
+
+    private fun stopTelemetryPing() {
+        telemetryPingRunning = false
+        mainHandler.removeCallbacks(telemetryPingRunnable)
+        controlLatencyTracker.reset()
+        if (!isHostPeer) {
+            _connectionTelemetry.value =
+                _connectionTelemetry.value.copy(controlRttMs = null)
+        }
+    }
+
+    private fun sendTelemetryPing() {
+        if (isHostPeer || !telemetryPingRunning) return
+        val channel = dataChannel ?: return
+        if (channel.state() != DataChannel.State.OPEN) return
+
+        val id = controlLatencyTracker.beginPing(SystemClock.elapsedRealtime())
+        sendTelemetryMessage(
+            JSONObject()
+                .put("op", "ping")
+                .put("id", id)
+        )
+    }
+
+    private fun sendTelemetryQuality(profile: StreamQuality) {
+        if (!isHostPeer) return
+        sendTelemetryMessage(
+            JSONObject()
+                .put("op", "quality")
+                .put("value", profile.name)
+        )
+    }
+
+    private fun handleTelemetryMessage(payload: JSONObject) {
+        when (payload.optString("op")) {
+            "ping" -> {
+                if (!isHostPeer) return
+                val id = payload.optLong("id", -1L)
+                if (id <= 0L) return
+                sendTelemetryMessage(
+                    JSONObject()
+                        .put("op", "pong")
+                        .put("id", id)
+                )
+            }
+
+            "pong" -> {
+                if (isHostPeer) return
+                val id = payload.optLong("id", -1L)
+                val rtt = controlLatencyTracker.completePong(
+                    id,
+                    SystemClock.elapsedRealtime()
+                ) ?: return
+                _connectionTelemetry.value =
+                    _connectionTelemetry.value.copy(controlRttMs = rtt)
+            }
+
+            "quality" -> {
+                if (isHostPeer) return
+                val profile = runCatching {
+                    StreamQuality.valueOf(payload.optString("value"))
+                }.getOrNull() ?: return
+                _connectionTelemetry.value =
+                    _connectionTelemetry.value.copy(quality = profile)
+            }
+        }
+    }
+
+    private fun sendTelemetryMessage(payload: JSONObject) {
+        val message = JSONObject()
+            .put("channel", "telemetry")
+            .put("payload", payload)
+            .toString()
+        sendData(message)
+    }
+
+    private fun resetTransientTelemetry() {
+        controlLatencyTracker.reset()
+        val current = _connectionTelemetry.value
+        _connectionTelemetry.value = current.copy(
+            controlRttMs = null,
+            networkRttMs = null,
+            packetLossFraction = null,
+            availableOutgoingBitrateBps = null,
+            route = ConnectionRoute.UNKNOWN
+        )
+    }
+
     private fun sendData(value: String) {
         val channel = dataChannel ?: return
         if (channel.state() != DataChannel.State.OPEN) return
@@ -551,6 +708,7 @@ class WebRtcEngine(private val context: Context) {
 
     private fun closePeerOnly() {
         stopQualityMonitor()
+        stopTelemetryPing()
         completeIceRestart()
         isClosing = true
         dataChannel?.close()
@@ -666,6 +824,7 @@ class WebRtcEngine(private val context: Context) {
 
     companion object {
         private const val QUALITY_SAMPLE_INTERVAL_MS = 3_000L
+        private const val TELEMETRY_PING_INTERVAL_MS = 5_000L
         private const val NETWORK_RECOVERY_COOLDOWN_MS = 3_000L
         private const val NORMAL_DISCONNECT_GRACE_MS = 10_000L
         private const val NETWORK_RECOVERY_GRACE_MS = 30_000L

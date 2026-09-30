@@ -48,6 +48,118 @@ class RtcQualityStatsTrackerTest {
     }
 
     @Test
+    fun selectedRelayCandidateIsClassifiedAsRelay() {
+        val tracker = RtcQualityStatsTracker()
+        val stats = linkedMapOf(
+            "pair" to stat(
+                "candidate-pair",
+                "pair",
+                mapOf(
+                    "state" to "succeeded",
+                    "nominated" to true,
+                    "localCandidateId" to "local",
+                    "remoteCandidateId" to "remote"
+                )
+            ),
+            "local" to stat(
+                "local-candidate",
+                "local",
+                mapOf("candidateType" to "relay")
+            ),
+            "remote" to stat(
+                "remote-candidate",
+                "remote",
+                mapOf("candidateType" to "srflx")
+            )
+        )
+
+        val snapshot = tracker.sampleWithRoute(RTCStatsReport(1_000L, stats))
+        assertEquals(ConnectionRoute.RELAY, snapshot.route)
+    }
+
+    @Test
+    fun selectedNonRelayCandidatesAreClassifiedAsDirect() {
+        val tracker = RtcQualityStatsTracker()
+        val stats = linkedMapOf(
+            "pair" to stat(
+                "candidate-pair",
+                "pair",
+                mapOf(
+                    "state" to "succeeded",
+                    "selected" to true,
+                    "localCandidateId" to "local",
+                    "remoteCandidateId" to "remote"
+                )
+            ),
+            "local" to stat(
+                "local-candidate",
+                "local",
+                mapOf("candidateType" to "host")
+            ),
+            "remote" to stat(
+                "remote-candidate",
+                "remote",
+                mapOf("candidateType" to "srflx")
+            )
+        )
+
+        val snapshot = tracker.sampleWithRoute(RTCStatsReport(1_000L, stats))
+        assertEquals(ConnectionRoute.DIRECT, snapshot.route)
+    }
+
+    @Test
+    fun selectedCandidateWinsOverOlderNominatedRelayDuringRestart() {
+        val tracker = RtcQualityStatsTracker()
+        val stats = linkedMapOf(
+            "oldPair" to stat(
+                "candidate-pair",
+                "oldPair",
+                mapOf(
+                    "state" to "succeeded",
+                    "nominated" to true,
+                    "selected" to false,
+                    "localCandidateId" to "oldLocal",
+                    "remoteCandidateId" to "oldRemote"
+                )
+            ),
+            "newPair" to stat(
+                "candidate-pair",
+                "newPair",
+                mapOf(
+                    "state" to "succeeded",
+                    "nominated" to true,
+                    "selected" to true,
+                    "localCandidateId" to "newLocal",
+                    "remoteCandidateId" to "newRemote"
+                )
+            ),
+            "oldLocal" to stat(
+                "local-candidate",
+                "oldLocal",
+                mapOf("candidateType" to "relay")
+            ),
+            "oldRemote" to stat(
+                "remote-candidate",
+                "oldRemote",
+                mapOf("candidateType" to "relay")
+            ),
+            "newLocal" to stat(
+                "local-candidate",
+                "newLocal",
+                mapOf("candidateType" to "host")
+            ),
+            "newRemote" to stat(
+                "remote-candidate",
+                "newRemote",
+                mapOf("candidateType" to "srflx")
+            )
+        )
+
+        val snapshot = tracker.sampleWithRoute(RTCStatsReport(1_000L, stats))
+        assertEquals(ConnectionRoute.DIRECT, snapshot.route)
+    }
+
+    @Test
     fun unselectedCandidatePairDoesNotOverrideSelectedPath() {
         val tracker = RtcQualityStatsTracker()
         val stats = linkedMapOf(

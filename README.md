@@ -196,4 +196,17 @@ All 12 planned implementation stages are represented in source:
 11. Security/reliability hardening
 12. Tests, deployment files, cleanup, and packaging
 
-The source in this ZIP has been syntax/static-checked, Android XML and deployment YAML were parsed, Node server files passed `node --check`, and the pure Kotlin session/rescue protocol tests were executed locally (including a 10,000-code generation round-trip and the 140-byte SMS limit). This build environment does not contain the Android SDK and cannot download Gradle/Maven/npm dependencies, so the Android APK and WebSocket integration tests could not be executed here. Run `./gradlew test assembleDebug` on a machine with Android SDK 36, then run the two-phone matrix above before treating a build as release-ready.
+Current automated verification covers Android unit tests, x86 and ARM64 debug builds, signaling happy-path/reconnect tests, Abuse Shield tests, adaptive-quality/telemetry tests, and local signaling soak runs. The soak harness exercises sequential sessions, concurrent sessions, ICE-restart signaling, viewer/host reconnects, and repeated reconnect cycles without consuming production Cloudflare quota. `scripts/emulator-startup-soak.sh` repeatedly cold-starts the installed Android app and fails on launch errors, crashes, or ANRs.
+
+Example local reliability checks:
+
+```bash
+# With a local Worker already listening on port 8810:
+cd cloudflare
+SIMPLELINK_TEST_WS=ws://127.0.0.1:8810/ws npm run test:soak
+
+# Android API 28 emulator startup/crash soak:
+./scripts/emulator-startup-soak.sh emulator-5554 60
+```
+
+Automated checks do not replace the two-real-phone matrix above. Before a public release, repeat that matrix across different carriers/networks and include a long real WebRTC session with actual screen capture/control.

@@ -21,6 +21,19 @@ There are no accounts, device dashboards, connection-mode pickers, file-mode que
 | Target phone is far away with internet switched off but SMS still works | Rescue SMS -> target Allow -> Android Internet panel -> automatic reconnect -> normal remote session |
 | Target has no internet, no SMS/cellular path, no nearby path | Remote communication is physically unavailable |
 
+## Adaptive stream quality
+
+Internet sessions start at the high-quality profile and adapt on the sharing phone from live WebRTC sender/candidate statistics. SimpleLink changes capture resolution, frame rate, and sender bitrate together rather than letting a weak link build latency.
+
+| Profile | Capture long edge | FPS | Sender bitrate cap |
+|---|---:|---:|---:|
+| High | 1600 px | 30 | 3.2 Mbps |
+| Balanced | 1280 px | 24 | 2.0 Mbps |
+| Low | 960 px | 18 | 1.1 Mbps |
+| Recovery | 720 px | 12 | 650 Kbps |
+
+The controller considers WebRTC's available outgoing bitrate, RTT, recent packet-loss delta, and bandwidth-limited encoder signal. It requires repeated bad samples before reducing quality and sustained good samples before increasing it, so short network spikes do not make the stream oscillate. Display rotation preserves the current quality profile.
+
 ## Rescue Mode
 
 Rescue Mode does **not** request SMS inbox permissions.

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.media.projection.MediaProjection
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.hardware.display.DisplayManager
 import android.util.DisplayMetrics
 import android.view.Display
@@ -26,6 +27,7 @@ import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.RtpReceiver
+import org.webrtc.RtpSender
 import org.webrtc.RtpTransceiver
 import org.webrtc.ScreenCapturerAndroid
 import org.webrtc.SdpObserver
@@ -45,6 +47,7 @@ class WebRtcEngine(private val context: Context) {
     private var videoSource: VideoSource? = null
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
     private var localVideoTrack: VideoTrack? = null
+    private var localVideoSender: RtpSender? = null
     private var activeRequestId: String? = null
     private var sendSignal: ((String, JSONObject) -> Unit)? = null
     private var activeIceServers: List<IceServerSpec> = emptyList()
@@ -55,9 +58,24 @@ class WebRtcEngine(private val context: Context) {
     private var displayListenerRegistered = false
     private var lastCaptureWidth = 0
     private var lastCaptureHeight = 0
+    private var lastCaptureFps = 0
+    private var currentStreamQuality = StreamQuality.HIGH
+    private val adaptiveQuality = AdaptiveQualityController()
+    private var qualityMonitorRunning = false
+    private var qualityStatsInFlight = false
+    private val qualityStatsTracker = RtcQualityStatsTracker()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val disconnectTimeout = Runnable {
         if (!isClosing) onDisconnected?.invoke()
+    }
+    private val qualityMonitorRunnable = object : Runnable {
+        override fun run() {
+            if (!qualityMonitorRunning) return
+            collectAdaptiveQualitySample()
+            if (qualityMonitorRunning) {
+                mainHandler.postDelayed(this, QUALITY_SAMPLE_INTERVAL_MS)
+            }
+        }
     }
 
     private val _remoteVideoTrack = MutableStateFlow<VideoTrack?>(null)
@@ -94,6 +112,9 @@ class WebRtcEngine(private val context: Context) {
         activeRequestId = requestId
         sendSignal = signalSender
         activeIceServers = iceServers
+        currentStreamQuality = StreamQuality.HIGH
+        adaptiveQuality.reset(SystemClock.elapsedRealtime())
+        qualityStatsTracker.reset()
         remoteDescriptionSet = false
         pendingRemoteCandidates.clear()
         peerConnection = createPeerConnection()
@@ -156,6 +177,7 @@ class WebRtcEngine(private val context: Context) {
     }
 
     fun close() {
+        stopQualityMonitor()
         runCatching { screenCapturer?.stopCapture() }
         screenCapturer?.dispose()
         screenCapturer = null
@@ -163,6 +185,7 @@ class WebRtcEngine(private val context: Context) {
         surfaceTextureHelper = null
         localVideoTrack?.dispose()
         localVideoTrack = null
+        localVideoSender = null
         videoSource?.dispose()
         videoSource = null
         mainHandler.removeCallbacks(disconnectTimeout)
@@ -172,6 +195,11 @@ class WebRtcEngine(private val context: Context) {
         activeRequestId = null
         sendSignal = null
         activeIceServers = emptyList()
+        currentStreamQuality = StreamQuality.HIGH
+        adaptiveQuality.reset()
+        lastCaptureWidth = 0
+        lastCaptureHeight = 0
+        lastCaptureFps = 0
         if (displayListenerRegistered) {
             runCatching { displayManager.unregisterDisplayListener(displayListener) }
             displayListenerRegistered = false
@@ -202,10 +230,8 @@ class WebRtcEngine(private val context: Context) {
 
     private fun startScreenCapture(permissionData: Intent) {
         val metrics = currentDisplayMetrics()
-        val maxLongEdge = 1600f
-        val scale = minOf(1f, maxLongEdge / maxOf(metrics.widthPixels, metrics.heightPixels).toFloat())
-        val width = (metrics.widthPixels * scale).toInt().coerceAtLeast(2)
-        val height = (metrics.heightPixels * scale).toInt().coerceAtLeast(2)
+        val profile = currentStreamQuality
+        val (width, height) = captureDimensions(metrics, profile)
 
         val capturer = ScreenCapturerAndroid(permissionData, object : MediaProjection.Callback() {
             override fun onStop() {
@@ -215,22 +241,105 @@ class WebRtcEngine(private val context: Context) {
         val source = factory.createVideoSource(true)
         val helper = SurfaceTextureHelper.create("SimpleLinkCapture", eglBase.eglBaseContext)
         capturer.initialize(helper, context, source.capturerObserver)
-        capturer.startCapture(width, height, 30)
+        capturer.startCapture(width, height, profile.fps)
         lastCaptureWidth = width
         lastCaptureHeight = height
+        lastCaptureFps = profile.fps
         val track = factory.createVideoTrack("screen-video", source)
         track.setEnabled(true)
-        peerConnection?.addTrack(track, listOf("simplelink-screen"))
+        localVideoSender = peerConnection?.addTrack(track, listOf("simplelink-screen"))
 
         screenCapturer = capturer
         videoSource = source
         surfaceTextureHelper = helper
         localVideoTrack = track
+        applySenderProfile(profile)
 
         sendScreenInfo(metrics.widthPixels, metrics.heightPixels)
         if (!displayListenerRegistered) {
             displayManager.registerDisplayListener(displayListener, null)
             displayListenerRegistered = true
+        }
+    }
+
+    private fun captureDimensions(
+        metrics: DisplayMetrics,
+        profile: StreamQuality
+    ): Pair<Int, Int> {
+        val longEdge = maxOf(metrics.widthPixels, metrics.heightPixels).coerceAtLeast(1)
+        val scale = minOf(1f, profile.longEdge / longEdge.toFloat())
+
+        fun even(value: Int): Int {
+            val safe = value.coerceAtLeast(2)
+            return if (safe % 2 == 0) safe else safe - 1
+        }
+
+        return even((metrics.widthPixels * scale).toInt()) to
+            even((metrics.heightPixels * scale).toInt())
+    }
+
+    private fun applyStreamQuality(profile: StreamQuality) {
+        currentStreamQuality = profile
+        val metrics = currentDisplayMetrics()
+        val (width, height) = captureDimensions(metrics, profile)
+
+        if (
+            width != lastCaptureWidth ||
+            height != lastCaptureHeight ||
+            profile.fps != lastCaptureFps
+        ) {
+            lastCaptureWidth = width
+            lastCaptureHeight = height
+            lastCaptureFps = profile.fps
+            runCatching {
+                screenCapturer?.changeCaptureFormat(width, height, profile.fps)
+            }
+        }
+
+        applySenderProfile(profile)
+    }
+
+    private fun applySenderProfile(profile: StreamQuality) {
+        val sender = localVideoSender ?: return
+        runCatching {
+            val parameters = sender.parameters
+            parameters.encodings.forEach { encoding ->
+                encoding.maxBitrateBps = profile.maxBitrateBps
+                encoding.maxFramerate = profile.fps
+            }
+            sender.setParameters(parameters)
+        }
+    }
+
+    private fun startQualityMonitor() {
+        if (localVideoSender == null || qualityMonitorRunning) return
+        qualityMonitorRunning = true
+        qualityStatsInFlight = false
+        qualityStatsTracker.reset()
+        mainHandler.removeCallbacks(qualityMonitorRunnable)
+        mainHandler.post(qualityMonitorRunnable)
+    }
+
+    private fun stopQualityMonitor() {
+        qualityMonitorRunning = false
+        qualityStatsInFlight = false
+        mainHandler.removeCallbacks(qualityMonitorRunnable)
+        qualityStatsTracker.reset()
+    }
+
+    private fun collectAdaptiveQualitySample() {
+        val peer = peerConnection ?: return
+        if (localVideoSender == null || qualityStatsInFlight) return
+        qualityStatsInFlight = true
+
+        peer.getStats { report ->
+            val sample = qualityStatsTracker.sample(report)
+            mainHandler.post {
+                qualityStatsInFlight = false
+                if (!qualityMonitorRunning || peerConnection !== peer) return@post
+                val next = adaptiveQuality.observe(sample, SystemClock.elapsedRealtime()) ?: return@post
+                applyStreamQuality(next)
+            }
         }
     }
 
@@ -354,6 +463,7 @@ class WebRtcEngine(private val context: Context) {
     }
 
     private fun closePeerOnly() {
+        stopQualityMonitor()
         isClosing = true
         dataChannel?.close()
         dataChannel?.dispose()
@@ -361,6 +471,7 @@ class WebRtcEngine(private val context: Context) {
         peerConnection?.close()
         peerConnection?.dispose()
         peerConnection = null
+        localVideoSender = null
         pendingRemoteCandidates.clear()
         remoteDescriptionSet = false
         isClosing = false
@@ -372,14 +483,20 @@ class WebRtcEngine(private val context: Context) {
         override fun onDisplayChanged(displayId: Int) {
             if (displayId != Display.DEFAULT_DISPLAY) return
             val metrics = currentDisplayMetrics()
-            val maxLongEdge = 1600f
-            val scale = minOf(1f, maxLongEdge / maxOf(metrics.widthPixels, metrics.heightPixels).toFloat())
-            val width = (metrics.widthPixels * scale).toInt().coerceAtLeast(2)
-            val height = (metrics.heightPixels * scale).toInt().coerceAtLeast(2)
-            if (width == lastCaptureWidth && height == lastCaptureHeight) return
-            lastCaptureWidth = width
-            lastCaptureHeight = height
-            runCatching { screenCapturer?.changeCaptureFormat(width, height, 30) }
+            val profile = currentStreamQuality
+            val (width, height) = captureDimensions(metrics, profile)
+            if (
+                width != lastCaptureWidth ||
+                height != lastCaptureHeight ||
+                profile.fps != lastCaptureFps
+            ) {
+                lastCaptureWidth = width
+                lastCaptureHeight = height
+                lastCaptureFps = profile.fps
+                runCatching {
+                    screenCapturer?.changeCaptureFormat(width, height, profile.fps)
+                }
+            }
             sendScreenInfo(metrics.widthPixels, metrics.heightPixels)
         }
     }
@@ -425,20 +542,28 @@ class WebRtcEngine(private val context: Context) {
             when (newState) {
                 PeerConnection.PeerConnectionState.CONNECTED -> {
                     mainHandler.removeCallbacks(disconnectTimeout)
+                    applySenderProfile(currentStreamQuality)
+                    startQualityMonitor()
                     onConnected?.invoke()
                 }
                 PeerConnection.PeerConnectionState.DISCONNECTED -> {
+                    stopQualityMonitor()
                     mainHandler.removeCallbacks(disconnectTimeout)
                     mainHandler.postDelayed(disconnectTimeout, 10_000)
                 }
                 PeerConnection.PeerConnectionState.FAILED,
                 PeerConnection.PeerConnectionState.CLOSED -> {
+                    stopQualityMonitor()
                     mainHandler.removeCallbacks(disconnectTimeout)
                     onDisconnected?.invoke()
                 }
                 else -> Unit
             }
         }
+    }
+
+    companion object {
+        private const val QUALITY_SAMPLE_INTERVAL_MS = 3_000L
     }
 }
 

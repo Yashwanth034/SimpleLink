@@ -6,6 +6,12 @@ SimpleLink is a minimal Android-to-Android remote support app.
 
 The person sharing their phone opens SimpleLink, gets a temporary 6-digit code, and approves the incoming request. The helper can then view and control the phone without accounts, device dashboards, permanent IDs, or connection-mode setup.
 
+## Download
+
+**Latest stable release:** [SimpleLink v0.1.0](https://github.com/Yashwanth034/SimpleLink/releases/latest)
+
+Download `SimpleLink-v0.1.0.apk` from the release assets and install it on Android 8.0 or newer.
+
 ## Features
 
 - Temporary 6-digit connection codes

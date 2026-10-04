@@ -96,16 +96,16 @@ Run tests and build the debug APK:
 ./gradlew test assembleDebug
 ```
 
-The debug APK is produced under:
+The debug APK is produced at:
 
 ```text
-app/build/outputs/apk/debug/
+app/build/intermediates/apk/debug/app-debug.apk
 ```
 
 Install on a connected test device:
 
 ```bash
-adb install -r -t app/build/outputs/apk/debug/app-debug.apk
+adb install -r -t app/build/intermediates/apk/debug/app-debug.apk
 ```
 
 ## Signaling
@@ -124,12 +124,6 @@ Deploy it only after configuring your own Cloudflare environment:
 
 ```bash
 npm run deploy
-```
-
-Live-safe tests require an explicit endpoint:
-
-```bash
-SIMPLELINK_TEST_WS=wss://YOUR_SIGNALING_HOST/ws node test/live-safe-smoke.mjs
 ```
 
 ### Local signaling server

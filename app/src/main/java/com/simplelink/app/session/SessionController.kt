@@ -2,10 +2,12 @@ package com.simplelink.app.session
 
 import android.content.Context
 import android.content.Intent
+import androidx.core.content.ContextCompat
 import com.simplelink.app.control.ControlAvailability
 import com.simplelink.app.control.ControlSessionGate
 import com.simplelink.app.control.RemoteControlCommand
 import com.simplelink.app.control.RemoteControlAccessibilityService
+import com.simplelink.app.media.ViewerSessionForegroundService
 import com.simplelink.app.nearby.NearbyCoordinator
 import com.simplelink.app.rescue.RescueRequest
 import com.simplelink.app.rescue.RescueSmsRetriever
@@ -419,8 +421,22 @@ class SessionController(private val context: Context) {
 
     private fun startViewerWebRtc(requestId: String) {
         activeRemoteRequestId = requestId
+        startViewerSessionService()
         webRtc.prepareViewer(requestId, iceServersFor(requestId), ::sendSignal)
         _state.value = SessionUiState.Remote(Role.VIEWER, "Starting secure session…")
+    }
+
+    private fun startViewerSessionService() {
+        runCatching {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, ViewerSessionForegroundService::class.java)
+            )
+        }
+    }
+
+    private fun stopViewerSessionService() {
+        context.stopService(Intent(context, ViewerSessionForegroundService::class.java))
     }
 
     fun sendControl(command: RemoteControlCommand) = webRtc.sendControl(command)
@@ -623,6 +639,7 @@ class SessionController(private val context: Context) {
     }
 
     private fun cleanup() {
+        stopViewerSessionService()
         ControlSessionGate.clear(context)
         RemoteControlAccessibilityService.instance?.disableForPrivacy()
         controlReadyJob?.cancel()

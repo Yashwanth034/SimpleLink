@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set VERSION=8.13
+set VERSION=9.4.1
 if "%GRADLE_USER_HOME%"=="" set GRADLE_USER_HOME=%USERPROFILE%\.gradle
 set CACHE=%GRADLE_USER_HOME%\simplelink-bootstrap
 set DIST=%CACHE%\gradle-%VERSION%

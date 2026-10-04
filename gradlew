@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION=8.13
+VERSION=9.4.1
 CACHE_ROOT="${GRADLE_USER_HOME:-$HOME/.gradle}/simplelink-bootstrap"
 DIST_DIR="$CACHE_ROOT/gradle-$VERSION"
 ZIP="$CACHE_ROOT/gradle-$VERSION-bin.zip"

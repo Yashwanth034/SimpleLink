@@ -15,11 +15,18 @@ cloudflare/.wrangler/
 # Signing material
 *.jks
 *.keystore
+*.pem
+*.key
+*.p12
+*.pfx
 
-# Generated APKs and local verification artifacts
+# Generated packages, logs, and local verification artifacts
 .artifacts/
 *.apk
-.x86-build.log
+*.aab
+*.apks
+*.log
+captures/
 .emu-*.png
 .real-*.png
 

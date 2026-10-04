@@ -1,8 +1,10 @@
 import { WebSocket } from '../../server/node_modules/ws/wrapper.mjs';
 
-const base =
-  process.env.SIMPLELINK_TEST_WS ||
-  'wss://simplelink-signal.funnyemail023.workers.dev/ws';
+const base = process.env.SIMPLELINK_TEST_WS;
+
+if (!base) {
+  throw new Error('SIMPLELINK_TEST_WS is required for live-safe smoke tests');
+}
 
 function code() {
   return String(Math.floor(100000 + Math.random() * 900000));
